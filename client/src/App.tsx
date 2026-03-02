@@ -11,30 +11,14 @@ import Dashboard from "@/pages/dashboard";
 import PacketDetail from "@/pages/packet-detail";
 import Handoff from "@/pages/handoff";
 import Admin from "@/pages/admin";
+import Frameworks from "@/pages/frameworks";
 import NotFound from "@/pages/not-found";
-import { Loader2 } from "lucide-react";
 
-function ProtectedRoute({
-  component: Component,
-}: {
-  component: () => JSX.Element;
-}) {
+function ProtectedRoute({ component: Component }: { component: () => JSX.Element; }) {
   const { user, isLoading } = useAuth();
   const [, navigate] = useLocation();
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    navigate("/auth/login");
-    return null;
-  }
-
+  if (isLoading) return <div className="min-h-screen" />;
+  if (!user) { navigate("/auth/login"); return null; }
   return <Component />;
 }
 
@@ -44,22 +28,17 @@ function Router() {
       <Route path="/" component={Landing} />
       <Route path="/auth/login" component={AuthLogin} />
       <Route path="/auth/signup" component={AuthSignup} />
-      <Route path="/dashboard">
-        {() => <ProtectedRoute component={Dashboard} />}
-      </Route>
-      <Route path="/packets/:id">
-        {() => <ProtectedRoute component={PacketDetail} />}
-      </Route>
+      <Route path="/dashboard">{() => <ProtectedRoute component={Dashboard} />}</Route>
+      <Route path="/frameworks">{() => <ProtectedRoute component={Frameworks} />}</Route>
+      <Route path="/packets/:id">{() => <ProtectedRoute component={PacketDetail} />}</Route>
       <Route path="/handoff/:token" component={Handoff} />
-      <Route path="/admin">
-        {() => <ProtectedRoute component={Admin} />}
-      </Route>
+      <Route path="/admin">{() => <ProtectedRoute component={Admin} />}</Route>
       <Route component={NotFound} />
     </Switch>
   );
 }
 
-function App() {
+export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -71,5 +50,3 @@ function App() {
     </QueryClientProvider>
   );
 }
-
-export default App;
