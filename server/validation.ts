@@ -1,129 +1,126 @@
-import { type RenewalPacket, type Document, CHECKLIST_WEIGHTS } from "@shared/schema";
+import type {
+  ChecklistItemTemplate,
+  Document,
+  DocumentRuleTemplate,
+  RenewalPacket,
+} from "@shared/schema";
 
-const DOPL_TOKENS = ["dopl", "160", "300", "salt lake city", "84111"];
+export type ItemStatus = {
+  key: string;
+  label: string;
+  isComplete: boolean;
+  statusType: "PASS" | "FAIL" | "MANUAL" | "MISSING";
+  message?: string;
+  weight: number;
+};
 
-export function validateCOI(text: string): { pass: boolean; missing: string[] } {
-  const normalized = text.toLowerCase().replace(/\s+/g, " ");
-  const missing: string[] = [];
+function isValidSelect(value: unknown, options: unknown): boolean {
+  if (!Array.isArray(options)) return !!value;
+  return options.includes(value);
+}
 
-  for (const token of DOPL_TOKENS) {
-    if (!normalized.includes(token)) {
-      missing.push(token);
+export function evaluateDocumentRule(
+  extractedText: string | null,
+  rule: DocumentRuleTemplate | undefined,
+): { status: "PASS" | "FAIL" | "MANUAL"; message?: string } {
+  if (!rule || rule.ruleType === "NONE") return { status: "PASS" };
+  if (rule.ruleType === "MANUAL") {
+    return { status: "MANUAL", message: rule.notes || "Manual review required." };
+  }
+
+  const normalized = (extractedText || "").toLowerCase();
+
+  if (rule.ruleType === "KEYWORDS") {
+    const keywords = rule.keywords || [];
+    const missing = keywords.filter((k) => !normalized.includes(k.toLowerCase()));
+    return missing.length
+      ? { status: "FAIL", message: `Missing keywords: ${missing.join(", ")}` }
+      : { status: "PASS" };
+  }
+
+  if (rule.ruleType === "REGEX") {
+    if (!rule.regex) return { status: "PASS" };
+    try {
+      const pattern = new RegExp(rule.regex, "i");
+      return pattern.test(extractedText || "")
+        ? { status: "PASS" }
+        : { status: "FAIL", message: "Document did not match expected pattern." };
+    } catch {
+      return { status: "MANUAL", message: "Invalid regex rule; manual review required." };
     }
   }
 
-  return { pass: missing.length === 0, missing };
-}
-
-export function validateWorkersCompCert(text: string): {
-  pass: boolean;
-  missing: string[];
-} {
-  return validateCOI(text);
-}
-
-export function validateWorkersCompWaiver(text: string): {
-  pass: boolean;
-  missing: string[];
-} {
-  const normalized = text.toLowerCase().replace(/\s+/g, " ");
-  const hasWaiver = normalized.includes("waiver");
-  const hasULC = normalized.includes("utah labor commission");
-  const pass = hasWaiver || hasULC;
-  const missing: string[] = [];
-  if (!pass) {
-    missing.push("waiver or Utah Labor Commission");
-  }
-  return { pass, missing };
-}
-
-export function formatLicenseNumber(raw: string): string {
-  const cleaned = raw.replace(/\s/g, "").replace(/-/g, "");
-  if (cleaned.length > 4) {
-    return cleaned.slice(0, -4) + "-" + cleaned.slice(-4);
-  }
-  return cleaned;
-}
-
-export function validateWthId(wth: string): boolean {
-  return /WTH$/i.test(wth.trim());
+  return { status: "PASS" };
 }
 
 export function calculateReadinessScore(
   packet: RenewalPacket,
+  templates: ChecklistItemTemplate[],
   docs: Document[],
-): { score: number; items: Record<string, { complete: boolean; weight: number }> } {
-  const coiDoc = docs.find((d) => d.type === "COI");
-  const coiValid = coiDoc
-    ? coiDoc.validationStatus === "PASS" || coiDoc.validationStatus === "MANUAL_CONFIRM"
-    : false;
+  rulesByItemId: Record<string, DocumentRuleTemplate | undefined> = {},
+): { overallScore: number; itemStatus: ItemStatus[] } {
+  const fields = (packet.packetFieldsJson || {}) as Record<string, any>;
+  let requiredWeightTotal = 0;
+  let completedWeightTotal = 0;
 
-  const wcDocs = docs.filter(
-    (d) => d.type === "WORKERS_COMP_CERT" || d.type === "WORKERS_COMP_WAIVER",
-  );
-  let wcComplete = false;
-  if (packet.workersCompPath === "CERTIFICATE") {
-    const cert = wcDocs.find((d) => d.type === "WORKERS_COMP_CERT");
-    const certValid = cert
-      ? cert.validationStatus === "PASS" || cert.validationStatus === "MANUAL_CONFIRM"
-      : false;
-    const hasIds =
-      (!!packet.dwsUiNumber && !!packet.taxWithholdingWth) || packet.hasPeo;
-    wcComplete = certValid && hasIds;
-  } else if (packet.workersCompPath === "WAIVER") {
-    const waiver = wcDocs.find((d) => d.type === "WORKERS_COMP_WAIVER");
-    wcComplete = waiver
-      ? waiver.validationStatus === "PASS" || waiver.validationStatus === "MANUAL_CONFIRM"
-      : false;
-  }
+  const itemStatus: ItemStatus[] = templates
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((item) => {
+      const value = fields[item.key];
+      const config = (item.configJson || {}) as Record<string, any>;
+      const linkedDocs = docs.filter((d) => d.checklistItemTemplateId === item.id);
+      let isComplete = false;
+      let statusType: ItemStatus["statusType"] = "MISSING";
+      let message = "";
 
-  const ceComplete =
-    !!packet.ceTotalHours &&
-    packet.ceTotalHours >= 6 &&
-    !!packet.ceLiveHours &&
-    packet.ceLiveHours >= 3;
+      if (item.inputType === "BOOLEAN") {
+        isComplete = value === true;
+        statusType = isComplete ? "PASS" : "MISSING";
+      } else if (item.inputType === "NUMBER") {
+        const num = value === null || value === undefined || value === "" ? null : Number(value);
+        const min = typeof config.min === "number" ? config.min : null;
+        isComplete = num !== null && !Number.isNaN(num) && (min === null || num >= min);
+        statusType = isComplete ? "PASS" : "MISSING";
+      } else if (item.inputType === "TEXT") {
+        isComplete = typeof value === "string" && value.trim().length > 0;
+        statusType = isComplete ? "PASS" : "MISSING";
+      } else if (item.inputType === "SELECT") {
+        isComplete = isValidSelect(value, config.options);
+        statusType = isComplete ? "PASS" : "MISSING";
+      } else if (item.inputType === "FILE") {
+        if (!linkedDocs.length) {
+          isComplete = false;
+          statusType = "MISSING";
+          message = "No file uploaded yet.";
+        } else {
+          const lastDoc = linkedDocs[0];
+          const ruleResult = evaluateDocumentRule(lastDoc.extractedText, rulesByItemId[item.id]);
+          if (ruleResult.status === "PASS") {
+            isComplete = true;
+            statusType = "PASS";
+          } else if (ruleResult.status === "MANUAL") {
+            isComplete = true;
+            statusType = "MANUAL";
+            message = ruleResult.message || "Needs manual review.";
+          } else {
+            isComplete = false;
+            statusType = "FAIL";
+            message = ruleResult.message || "Validation failed.";
+          }
+        }
+      }
 
-  const items: Record<string, { complete: boolean; weight: number }> = {
-    utahId: { complete: packet.hasUtahId, weight: CHECKLIST_WEIGHTS.utahId },
-    myLicenseLinked: {
-      complete: packet.isMyLicenseLinked,
-      weight: CHECKLIST_WEIGHTS.myLicenseLinked,
-    },
-    ce: { complete: ceComplete, weight: CHECKLIST_WEIGHTS.ce },
-    entity: { complete: packet.entityRenewed, weight: CHECKLIST_WEIGHTS.entity },
-    liabilityCoi: { complete: coiValid, weight: CHECKLIST_WEIGHTS.liabilityCoi },
-    workersComp: {
-      complete: wcComplete,
-      weight: CHECKLIST_WEIGHTS.workersComp,
-    },
-    mandatoryDisclosure: {
-      complete: packet.mandatoryDisclosureReady,
-      weight: CHECKLIST_WEIGHTS.mandatoryDisclosure,
-    },
-    feeAcknowledged: {
-      complete: packet.feeAcknowledged,
-      weight: CHECKLIST_WEIGHTS.feeAcknowledged,
-    },
-  };
+      if (item.isRequired) {
+        requiredWeightTotal += item.weight;
+        if (isComplete) completedWeightTotal += item.weight;
+      }
 
-  let score = 0;
-  for (const item of Object.values(items)) {
-    if (item.complete) score += item.weight;
-  }
+      return { key: item.key, label: item.label, isComplete, statusType, message, weight: item.weight };
+    });
 
-  return { score, items };
+  const overallScore = requiredWeightTotal
+    ? Math.round((completedWeightTotal / requiredWeightTotal) * 100)
+    : 0;
+
+  return { overallScore, itemStatus };
 }
-
-export const COI_EMAIL_TEMPLATE = `Subject: Update Certificate Holder for DOPL Renewal
-
-Hello,
-
-I am renewing my Utah contractor license through the Division of Professional Licensing (DOPL). Could you please update my Certificate of Insurance (COI) to list the following as the Certificate Holder:
-
-Division of Professional Licensing (DOPL)
-160 E 300 S
-Salt Lake City, UT 84111
-
-Please send me a PDF copy of the updated certificate.
-
-Thank you.`;

@@ -1,13 +1,12 @@
-import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
-  varchar,
   boolean,
   integer,
   timestamp,
   serial,
   jsonb,
+  uuid,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -48,6 +47,47 @@ export const requirementTemplates = pgTable("requirement_templates", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const frameworkTemplates = pgTable("framework_templates", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  category: text("category").notNull(),
+  jurisdictionType: text("jurisdiction_type").notNull().default("NONE"),
+  jurisdictionValue: text("jurisdiction_value"),
+  version: integer("version").notNull().default(1),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const checklistItemTemplates = pgTable("checklist_item_templates", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  frameworkId: uuid("framework_id")
+    .notNull()
+    .references(() => frameworkTemplates.id),
+  key: text("key").notNull(),
+  label: text("label").notNull(),
+  description: text("description"),
+  inputType: text("input_type").notNull(),
+  configJson: jsonb("config_json").notNull().default({}),
+  weight: integer("weight").notNull().default(1),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isRequired: boolean("is_required").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const documentRuleTemplates = pgTable("document_rule_templates", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  checklistItemTemplateId: uuid("checklist_item_template_id")
+    .notNull()
+    .references(() => checklistItemTemplates.id),
+  ruleType: text("rule_type").notNull().default("NONE"),
+  keywords: text("keywords").array(),
+  regex: text("regex"),
+  requiredMimeTypes: text("required_mime_types").array(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const organizations = pgTable("organizations", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -75,6 +115,8 @@ export const renewalPackets = pgTable("renewal_packets", {
   userId: integer("user_id")
     .notNull()
     .references(() => users.id),
+  frameworkId: uuid("framework_id").references(() => frameworkTemplates.id),
+  packetFieldsJson: jsonb("packet_fields_json").notNull().default({}),
   stateId: integer("state_id"),
   licenseTypeId: integer("license_type_id"),
   title: text("title").notNull(),
@@ -106,6 +148,9 @@ export const documents = pgTable("documents", {
   packetId: integer("packet_id")
     .notNull()
     .references(() => renewalPackets.id),
+  checklistItemTemplateId: uuid("checklist_item_template_id").references(
+    () => checklistItemTemplates.id,
+  ),
   type: text("type").notNull(),
   filePath: text("file_path").notNull(),
   originalName: text("original_name").notNull(),
@@ -129,15 +174,6 @@ export const handoffTokens = pgTable("handoff_tokens", {
   usedAt: timestamp("used_at"),
 });
 
-export const insertUserSchema = createInsertSchema(users).omit({
-  id: true,
-  createdAt: true,
-  isAdmin: true,
-  role: true,
-  organizationId: true,
-  passwordHash: true,
-});
-
 export const signupSchema = z.object({
   email: z.string().email("Please enter a valid email"),
   password: z.string().min(6, "Password must be at least 6 characters"),
@@ -155,40 +191,15 @@ export const insertPacketSchema = createInsertSchema(renewalPackets).omit({
   createdAt: true,
   updatedAt: true,
 });
-
 export const updatePacketSchema = insertPacketSchema.partial();
-
 export const insertDocumentSchema = createInsertSchema(documents).omit({
   id: true,
   createdAt: true,
 });
 
-export const insertStateSchema = createInsertSchema(states).omit({
-  id: true,
-  createdAt: true,
-});
-
-export const insertLicenseTypeSchema = createInsertSchema(licenseTypes).omit({
-  id: true,
-  createdAt: true,
-});
-
-export const insertRequirementTemplateSchema = createInsertSchema(requirementTemplates).omit({
-  id: true,
-  createdAt: true,
-});
-
-export const insertOrganizationSchema = createInsertSchema(organizations).omit({
-  id: true,
-  createdAt: true,
-  stripeCustomerId: true,
-  subscriptionStatus: true,
-});
-
 export type User = typeof users.$inferSelect;
-export type InsertUser = z.infer<typeof insertUserSchema>;
 export type RenewalPacket = typeof renewalPackets.$inferSelect;
-export type InsertPacket = z.infer<typeof insertPacketSchema>;
+export type ReadinessPacket = RenewalPacket;
 export type UpdatePacket = z.infer<typeof updatePacketSchema>;
 export type Document = typeof documents.$inferSelect;
 export type HandoffToken = typeof handoffTokens.$inferSelect;
@@ -196,30 +207,9 @@ export type State = typeof states.$inferSelect;
 export type LicenseType = typeof licenseTypes.$inferSelect;
 export type RequirementTemplate = typeof requirementTemplates.$inferSelect;
 export type Organization = typeof organizations.$inferSelect;
+export type FrameworkTemplate = typeof frameworkTemplates.$inferSelect;
+export type ChecklistItemTemplate = typeof checklistItemTemplates.$inferSelect;
+export type DocumentRuleTemplate = typeof documentRuleTemplates.$inferSelect;
 
-export type UserRole = "USER" | "ADMIN" | "ORG_ADMIN";
-
-export const CHECKLIST_WEIGHTS = {
-  utahId: 10,
-  myLicenseLinked: 15,
-  ce: 10,
-  entity: 10,
-  liabilityCoi: 20,
-  workersComp: 25,
-  mandatoryDisclosure: 5,
-  feeAcknowledged: 5,
-} as const;
-
-export type WorkersCompPath = "CERTIFICATE" | "WAIVER" | "NONE";
-export type DocumentType =
-  | "COI"
-  | "WORKERS_COMP_CERT"
-  | "WORKERS_COMP_WAIVER"
-  | "CE_PROOF"
-  | "PEO_CONTRACT"
-  | "OTHER";
-export type ValidationStatus =
-  | "PASS"
-  | "FAIL"
-  | "MANUAL_CONFIRM"
-  | "UNKNOWN";
+export type DocumentType = "CHECKLIST_FILE" | "OTHER";
+export type ValidationStatus = "PASS" | "FAIL" | "MANUAL_CONFIRM" | "UNKNOWN";
